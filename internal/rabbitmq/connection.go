@@ -1,6 +1,6 @@
 package rabbitmq
 
-import "todoapp-rabbitmq/internal/config"
+import "github.com/Dolg0ff/todoapp-rabbitmq/internal/config"
 
 type Connection struct {
 	conn    *amqp.Connection
