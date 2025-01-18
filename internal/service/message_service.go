@@ -16,7 +16,6 @@ func NewMessageService(logger *logger.Logger) *MessageService {
 }
 
 func (s *MessageService) ProcessMessage(msg *domain.Message) error {
-	// Бизнес-логика обработки сообщения
 	s.logger.Info("Processing message", "content", msg.Content)
 	return nil
 }
