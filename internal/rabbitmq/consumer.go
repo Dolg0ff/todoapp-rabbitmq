@@ -1,8 +1,11 @@
 package rabbitmq
 
 import (
+	"context"
 	"fmt"
+	"time"
 
+	"github.com/Dolg0ff/todoapp-rabbitmq/internal/metrics"
 	"github.com/Dolg0ff/todoapp-rabbitmq/pkg/logger"
 )
 
@@ -10,13 +13,14 @@ type Consumer struct {
 	conn    *Connection
 	handler MessageHandler
 	logger  *logger.Logger
+	metrics *metrics.Metrics
 }
 
 type MessageHandler interface {
 	Handle(msg []byte) error
 }
 
-func NewConsumer(conn *Connection, handler MessageHandler, logger *logger.Logger) (*Consumer, error) {
+func NewConsumer(conn *Connection, handler MessageHandler, logger *logger.Logger, metrics *metrics.Metrics) (*Consumer, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("connection is nil")
 	}
@@ -26,6 +30,9 @@ func NewConsumer(conn *Connection, handler MessageHandler, logger *logger.Logger
 	if logger == nil {
 		return nil, fmt.Errorf("logger is nil")
 	}
+	if metrics == nil {
+		return nil, fmt.Errorf("metrics is nil")
+	}
 	if conn.channel == nil {
 		return nil, fmt.Errorf("connection channel is nil")
 	}
@@ -34,6 +41,7 @@ func NewConsumer(conn *Connection, handler MessageHandler, logger *logger.Logger
 		conn:    conn,
 		handler: handler,
 		logger:  logger,
+		metrics: metrics,
 	}, nil
 }
 
@@ -53,6 +61,8 @@ func (c *Consumer) Start() error {
 
 	c.logger.Info("Starting consumer...")
 
+	go c.monitorQueueSize()
+
 	msgs, err := c.conn.channel.Consume(
 		c.conn.config.RabbitMQ.Queue,
 		"",    // consumer
@@ -69,12 +79,50 @@ func (c *Consumer) Start() error {
 
 	go func() {
 		for msg := range msgs {
+			queue, err := c.conn.channel.QueueDeclarePassive(
+				c.conn.config.RabbitMQ.Queue, // name
+				true,                         // durable
+				false,                        // autoDelete
+				false,                        // exclusive
+				false,                        // noWait
+				nil,                          // arguments
+			)
+			if err == nil {
+				c.metrics.QueueSize.Set(float64(queue.Messages + 1))
+				c.logger.Info("Current queue size", "size", queue.Messages+1)
+			}
+
 			c.logger.Info("Received message from queue")
+
+			// Record message size
+			c.metrics.MessageSize.Observe(float64(len(msg.Body)))
+
+			// Start processing time measurement
+			start := time.Now()
+
 			if err := c.handler.Handle(msg.Body); err != nil {
 				c.logger.Error("Failed to handle message", err)
-				msg.Nack(false, true) // Сообщение вернется в очередь
+				c.metrics.MessagesFailedTotal.Inc()
+				msg.Nack(false, true)
 				continue
 			}
+
+			queue, err = c.conn.channel.QueueDeclarePassive(
+				c.conn.config.RabbitMQ.Queue,
+				true,
+				false,
+				false,
+				false,
+				nil,
+			)
+			if err == nil {
+				c.metrics.QueueSize.Set(float64(queue.Messages))
+				c.logger.Info("Queue size after processing", "size", queue.Messages)
+			}
+
+			c.metrics.ProcessingTime.Observe(time.Since(start).Seconds())
+			c.metrics.MessagesProcessed.Inc()
+
 			c.logger.Info("Successfully processed message")
 			msg.Ack(false)
 		}
@@ -83,4 +131,36 @@ func (c *Consumer) Start() error {
 	c.logger.Info("Consumer started successfully")
 
 	return nil
+}
+
+func (c *Consumer) Stop(ctx context.Context) error {
+	c.logger.Info("Stopping consumer...")
+
+	if err := c.conn.channel.Close(); err != nil {
+		return fmt.Errorf("failed to close channel: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Consumer) monitorQueueSize() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		queue, err := c.conn.channel.QueueDeclarePassive(
+			c.conn.config.RabbitMQ.Queue, // name
+			true,                         // durable
+			false,                        // autoDelete
+			false,                        // exclusive
+			false,                        // noWait
+			nil,                          // arguments
+		)
+		if err != nil {
+			c.logger.Error("Failed to inspect queue", err)
+			continue
+		}
+		c.metrics.QueueSize.Set(float64(queue.Messages))
+		c.logger.Info("Queue size from monitor", "size", queue.Messages)
+	}
 }
