@@ -76,7 +76,7 @@ func validateConfig(cfg *Config) error {
 }
 
 func (c *Config) String() string {
-	maskedURL := maskURL(c.RabbitMQ.URL)
+	maskedURL := maskURL()
 
 	return fmt.Sprintf(
 		"Config{RabbitMQ:{URL:%s Queue:%s Exchange:%s} "+
@@ -92,6 +92,6 @@ func (c *Config) String() string {
 	)
 }
 
-func maskURL(url string) string {
+func maskURL() string {
 	return "[MASKED]"
 }
