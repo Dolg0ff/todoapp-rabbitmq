@@ -61,6 +61,46 @@ func (c *Consumer) Start() error {
 
 	c.logger.Info("Starting consumer...")
 
+	// Создаем exchange
+	err := c.conn.channel.ExchangeDeclare(
+		c.conn.config.RabbitMQ.Exchange, // name: todo_exchange
+		"direct",                        // type
+		true,                            // durable
+		false,                           // auto-deleted
+		false,                           // internal
+		false,                           // no-wait
+		nil,                             // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare exchange: %w", err)
+	}
+
+	// Создаем очередь
+	queue, err := c.conn.channel.QueueDeclare(
+		c.conn.config.RabbitMQ.Queue, // name: todo_queue
+		true,                         // durable
+		false,                        // delete when unused
+		false,                        // exclusive
+		false,                        // no-wait
+		nil,                          // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare queue: %w", err)
+	}
+
+	// Связываем очередь с exchange
+	err = c.conn.channel.QueueBind(
+		queue.Name,                      // queue name: todo_queue
+		c.conn.config.RabbitMQ.Queue,    // routing key: todo_queue
+		c.conn.config.RabbitMQ.Exchange, // exchange: todo_exchange
+		false,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to bind queue: %w", err)
+	}
+
+	// Start queue size monitoring
 	go c.monitorQueueSize()
 
 	msgs, err := c.conn.channel.Consume(
@@ -80,12 +120,12 @@ func (c *Consumer) Start() error {
 	go func() {
 		for msg := range msgs {
 			queue, err := c.conn.channel.QueueDeclarePassive(
-				c.conn.config.RabbitMQ.Queue, // name
-				true,                         // durable
-				false,                        // autoDelete
-				false,                        // exclusive
-				false,                        // noWait
-				nil,                          // arguments
+				c.conn.config.RabbitMQ.Queue,
+				true,
+				false,
+				false,
+				false,
+				nil,
 			)
 			if err == nil {
 				c.metrics.QueueSize.Set(float64(queue.Messages + 1))
